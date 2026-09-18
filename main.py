@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import threading
 import cloudscraper
 from datetime import datetime
@@ -31,28 +32,36 @@ TARGET_BRANDS = [
     "adidas"
 ]
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+]
+
 def create_fresh_scraper():
-    """Generates a browser session with realistic headers."""
+    """Generates a fresh browser scraper with randomized session headers."""
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
+    ua = random.choice(USER_AGENTS)
     scraper.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": "https://www.vinted.fr/catalog",
-        "Origin": "https://www.vinted.fr"
+        "Origin": "https://www.vinted.fr",
+        "Connection": "keep-alive"
     })
     try:
-        # Visit main page first to get session cookies
-        scraper.get("https://www.vinted.fr", timeout=10)
+        # Establish initial session cookie
+        scraper.get("https://www.vinted.fr", timeout=12)
     except Exception as e:
-        print(f"Cookie fetch warning: {e}", flush=True)
+        print(f"Cookie setup notice: {e}", flush=True)
     return scraper
 
 seen_item_ids = set()
 
-def send_discord_alert(title, price, brand, size, item_id, photo_url):
+def send_discord_alert(scraper_instance, title, price, brand, size, item_id, photo_url):
     item_url = f"https://www.vinted.fr/items/{item_id}"
     payload = {
         "username": "Vinted Deal Monitor",
@@ -78,14 +87,13 @@ def send_discord_alert(title, price, brand, size, item_id, photo_url):
         ]
     }
     try:
-        res = scraper.post(DISCORD_WEBHOOK_URL, json=payload)
+        res = scraper_instance.post(DISCORD_WEBHOOK_URL, json=payload)
         print(f"Discord Alert Sent! Status Code: {res.status_code}", flush=True)
     except Exception as e:
         print(f"Discord Alert Error: {e}", flush=True)
 
 def run_monitor():
-    global scraper
-    print("Vinted Monitor Initializing...", flush=True)
+    print("Vinted Self-Healing Monitor Initializing...", flush=True)
     scraper = create_fresh_scraper()
 
     while True:
@@ -110,6 +118,7 @@ def run_monitor():
                             photos = item.get("photos", [])
                             photo_url = photos[0].get("url", "") if photos else ""
                             send_discord_alert(
+                                scraper,
                                 title,
                                 item.get("price"),
                                 brand_title,
@@ -123,15 +132,17 @@ def run_monitor():
                         seen_item_ids.add(item_id)
 
             elif response.status_code in [403, 429]:
-                print(f"Block detected ({response.status_code}). Rebuilding session...", flush=True)
-                time.sleep(15)
+                print(f"Block ({response.status_code}) encountered. Clearing cookies & rotating user-agent...", flush=True)
+                time.sleep(25)
                 scraper = create_fresh_scraper()
 
         except Exception as e:
-            print(f"Connection error: {e}", flush=True)
+            print(f"Network exception: {e}. Rebuilding scraper...", flush=True)
+            time.sleep(15)
+            scraper = create_fresh_scraper()
 
-        # Increased delay slightly to 30s to avoid triggering Cloudflare rate limits
-        time.sleep(30)
+        # Polling delay set to 35s to comply with Cloudflare rate limits on datacenter IPs
+        time.sleep(35)
 
 if __name__ == "__main__":
     run_monitor()
