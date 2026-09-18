@@ -1,14 +1,39 @@
+import os
 import time
+import threading
 import cloudscraper
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# 1. Your Discord Webhook Link
+# --- 1. HEALTH CHECK SERVER FOR RENDER ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Vinted Monitor Active")
+
+def run_health_check():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_health_check, daemon=True).start()
+
+# --- 2. VINTED MONITOR CONFIGURATION ---
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1550604418112823318/-GczalwvRKujHA_6JwGSBba-3f3ceejYIUz-jQv9h4Z5NNgDLI7BG4iwqVROEYtbmCw-"
 
-# 2. Vinted Search Endpoint
-VINTED_URL = "https://www.vinted.fr/api/v2/catalog/items?search_text=nike%20ralph%20lauren&price_to=50&currency=EUR"
+# Catalog filter removed -> Fetches ALL categories sorted by newest items under €50
+VINTED_URL = "https://www.vinted.fr/api/v2/catalog/items?price_to=50&currency=EUR&order=newest_first"
 
-# Initialize cloudscraper to auto-bypass Cloudflare
+# Target brands (lowercase for matching)
+TARGET_BRANDS = [
+    "ralph lauren", "polo ralph lauren",
+    "louis vuitton",
+    "nike",
+    "burberry",
+    "adidas"
+]
+
 scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
@@ -16,9 +41,7 @@ scraper = cloudscraper.create_scraper(
 seen_item_ids = set()
 
 def send_discord_alert(title, price, brand, size, item_id, photo_url):
-    """Sends the formatted rich embed directly to Discord."""
     item_url = f"https://www.vinted.fr/items/{item_id}"
-    
     payload = {
         "username": "Vinted Deal Monitor",
         "avatar_url": "https://www.vinted.fr/favicon.ico",
@@ -35,7 +58,7 @@ def send_discord_alert(title, price, brand, size, item_id, photo_url):
                 ],
                 "image": {"url": photo_url} if photo_url else {},
                 "footer": {
-                    "text": "Vinted Monitor • Ireland Alerts",
+                    "text": "Vinted Monitor • All Categories Alert",
                     "icon_url": "https://www.vinted.fr/favicon.ico"
                 },
                 "timestamp": datetime.utcnow().isoformat()
@@ -48,53 +71,44 @@ def send_discord_alert(title, price, brand, size, item_id, photo_url):
         print(f"Discord Alert Error: {e}")
 
 def run_monitor():
-    print("Vinted Cloudscraper Active: Monitoring Nike & Ralph Lauren under €50...")
-
-    # Warm up session and acquire Cloudflare clearance tokens
+    print("Vinted Monitor Active: All Categories (Ralph Lauren, LV, Nike, Burberry, Adidas <= €50)...")
     try:
         scraper.get("https://www.vinted.fr")
-        print("Cloudflare verification passed!")
-    except Exception as e:
-        print(f"Initial setup warning: {e}")
+    except Exception:
+        pass
 
     while True:
         try:
             response = scraper.get(VINTED_URL, timeout=15)
-            
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("items", [])
-
                 for item in items:
                     item_id = item.get("id")
                     if item_id not in seen_item_ids:
-                        if len(seen_item_ids) > 0:
-                            print(f"New deal found: {item.get('title')}")
-                            
-                            photos = item.get("photos", [])
-                            photo_url = photos[0].get("url", "") if photos else ""
-                            
-                            send_discord_alert(
-                                item.get("title"),
-                                item.get("price"),
-                                item.get("brand_title"),
-                                item.get("size_title"),
-                                item_id,
-                                photo_url
-                            )
+                        brand_title = (item.get("brand_title") or "").lower()
+                        title = (item.get("title") or "").lower()
+                        
+                        # Check if any target brand matches title or brand label
+                        if any(b in brand_title or b in title for b in TARGET_BRANDS):
+                            if len(seen_item_ids) > 0:
+                                photos = item.get("photos", [])
+                                photo_url = photos[0].get("url", "") if photos else ""
+                                send_discord_alert(
+                                    item.get("title"),
+                                    item.get("price"),
+                                    item.get("brand_title"),
+                                    item.get("size_title"),
+                                    item_id,
+                                    photo_url
+                                )
                         seen_item_ids.add(item_id)
-
             elif response.status_code in [403, 404, 429]:
-                print(f"Response {response.status_code}. Re-authenticating session...")
                 time.sleep(10)
                 scraper.get("https://www.vinted.fr")
-            else:
-                print(f"Status Code: {response.status_code}")
-
         except Exception as e:
             print(f"Connection paused: {e}")
 
-        # Check interval
         time.sleep(20)
 
 if __name__ == "__main__":
