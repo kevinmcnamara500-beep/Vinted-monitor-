@@ -31,9 +31,24 @@ TARGET_BRANDS = [
     "adidas"
 ]
 
-scraper = cloudscraper.create_scraper(
-    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-)
+def create_fresh_scraper():
+    """Generates a browser session with realistic headers."""
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+    )
+    scraper.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.vinted.fr/catalog",
+        "Origin": "https://www.vinted.fr"
+    })
+    try:
+        # Visit main page first to get session cookies
+        scraper.get("https://www.vinted.fr", timeout=10)
+    except Exception as e:
+        print(f"Cookie fetch warning: {e}", flush=True)
+    return scraper
 
 seen_item_ids = set()
 
@@ -64,20 +79,20 @@ def send_discord_alert(title, price, brand, size, item_id, photo_url):
     }
     try:
         res = scraper.post(DISCORD_WEBHOOK_URL, json=payload)
-        print(f"Discord Alert Sent! Status Code: {res.status_code}")
+        print(f"Discord Alert Sent! Status Code: {res.status_code}", flush=True)
     except Exception as e:
-        print(f"Discord Alert Error: {e}")
+        print(f"Discord Alert Error: {e}", flush=True)
 
 def run_monitor():
-    print("Vinted Monitor Started with Active Logging...")
-    try:
-        scraper.get("https://www.vinted.fr")
-    except Exception:
-        pass
+    global scraper
+    print("Vinted Monitor Initializing...", flush=True)
+    scraper = create_fresh_scraper()
 
     while True:
         try:
             response = scraper.get(VINTED_URL, timeout=15)
+            print(f"Vinted Fetch Status: {response.status_code}", flush=True)
+            
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("items", [])
@@ -90,9 +105,8 @@ def run_monitor():
                         brand_clean = brand_title.lower()
                         title_clean = title.lower()
                         
-                        # Match target brands
                         if any(b in brand_clean or b in title_clean for b in TARGET_BRANDS):
-                            print(f"[MATCH FOUND] {brand_title} - {title} (€{item.get('price')})")
+                            print(f"[MATCH FOUND] {brand_title} - {title} (€{item.get('price')})", flush=True)
                             photos = item.get("photos", [])
                             photo_url = photos[0].get("url", "") if photos else ""
                             send_discord_alert(
@@ -104,18 +118,20 @@ def run_monitor():
                                 photo_url
                             )
                         else:
-                            # Log scanned and rejected items
-                            print(f"[IGNORED] {brand_title} | {title[:30]}")
+                            print(f"[IGNORED] {brand_title} | {title[:30]}", flush=True)
                             
                         seen_item_ids.add(item_id)
-            elif response.status_code in [403, 404, 429]:
-                print(f"Vinted blocked IP ({response.status_code}), re-authenticating...")
-                time.sleep(10)
-                scraper.get("https://www.vinted.fr")
-        except Exception as e:
-            print(f"Connection error: {e}")
 
-        time.sleep(20)
+            elif response.status_code in [403, 429]:
+                print(f"Block detected ({response.status_code}). Rebuilding session...", flush=True)
+                time.sleep(15)
+                scraper = create_fresh_scraper()
+
+        except Exception as e:
+            print(f"Connection error: {e}", flush=True)
+
+        # Increased delay slightly to 30s to avoid triggering Cloudflare rate limits
+        time.sleep(30)
 
 if __name__ == "__main__":
     run_monitor()
