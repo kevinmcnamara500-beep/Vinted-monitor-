@@ -39,7 +39,6 @@ USER_AGENTS = [
 ]
 
 def create_fresh_scraper():
-    """Generates a fresh browser scraper with randomized session headers."""
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
@@ -48,13 +47,11 @@ def create_fresh_scraper():
         "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.vinted.fr/catalog",
-        "Origin": "https://www.vinted.fr",
-        "Connection": "keep-alive"
+        "Referer": "https://www.vinted.fr/",
+        "Origin": "https://www.vinted.fr"
     })
     try:
-        # Establish initial session cookie
-        scraper.get("https://www.vinted.fr", timeout=12)
+        scraper.get("https://www.vinted.fr", timeout=15)
     except Exception as e:
         print(f"Cookie setup notice: {e}", flush=True)
     return scraper
@@ -78,22 +75,18 @@ def send_discord_alert(scraper_instance, title, price, brand, size, item_id, pho
                     {"name": "💶 Currency", "value": "`EUR (€)`", "inline": True}
                 ],
                 "image": {"url": photo_url} if photo_url else {},
-                "footer": {
-                    "text": "Vinted Monitor • All Categories",
-                    "icon_url": "https://www.vinted.fr/favicon.ico"
-                },
                 "timestamp": datetime.utcnow().isoformat()
             }
         ]
     }
     try:
-        res = scraper_instance.post(DISCORD_WEBHOOK_URL, json=payload)
-        print(f"Discord Alert Sent! Status Code: {res.status_code}", flush=True)
+        scraper_instance.post(DISCORD_WEBHOOK_URL, json=payload)
+        print("Discord Alert Sent!", flush=True)
     except Exception as e:
         print(f"Discord Alert Error: {e}", flush=True)
 
 def run_monitor():
-    print("Vinted Self-Healing Monitor Initializing...", flush=True)
+    print("Vinted Monitor Started with Slow-Rate Mode...", flush=True)
     scraper = create_fresh_scraper()
 
     while True:
@@ -110,39 +103,28 @@ def run_monitor():
                         brand_title = item.get("brand_title") or "Unknown Brand"
                         title = item.get("title") or "No Title"
                         
-                        brand_clean = brand_title.lower()
-                        title_clean = title.lower()
-                        
                         if any(b in brand_clean or b in title_clean for b in TARGET_BRANDS):
                             print(f"[MATCH FOUND] {brand_title} - {title} (€{item.get('price')})", flush=True)
                             photos = item.get("photos", [])
                             photo_url = photos[0].get("url", "") if photos else ""
-                            send_discord_alert(
-                                scraper,
-                                title,
-                                item.get("price"),
-                                brand_title,
-                                item.get("size_title"),
-                                item_id,
-                                photo_url
-                            )
+                            send_discord_alert(scraper, title, item.get("price"), brand_title, item.get("size_title"), item_id, photo_url)
                         else:
                             print(f"[IGNORED] {brand_title} | {title[:30]}", flush=True)
                             
                         seen_item_ids.add(item_id)
 
             elif response.status_code in [403, 429]:
-                print(f"Block ({response.status_code}) encountered. Clearing cookies & rotating user-agent...", flush=True)
-                time.sleep(25)
+                print(f"Cloudflare Block ({response.status_code}). Cooling down for 60 seconds...", flush=True)
+                time.sleep(60)
                 scraper = create_fresh_scraper()
 
         except Exception as e:
-            print(f"Network exception: {e}. Rebuilding scraper...", flush=True)
-            time.sleep(15)
+            print(f"Network exception: {e}", flush=True)
+            time.sleep(30)
             scraper = create_fresh_scraper()
 
-        # Polling delay set to 35s to comply with Cloudflare rate limits on datacenter IPs
-        time.sleep(35)
+        # Slow polling interval to avoid tripping bot detection
+        time.sleep(60)
 
 if __name__ == "__main__":
     run_monitor()
